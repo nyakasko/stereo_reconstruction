@@ -1,0 +1,3 @@
+D:/source/repos/stereo_reconstruction/build/CMakeFiles/stereo_reconstruction.dir
+D:/source/repos/stereo_reconstruction/build/CMakeFiles/ALL_BUILD.dir
+D:/source/repos/stereo_reconstruction/build/CMakeFiles/ZERO_CHECK.dir
