@@ -66,7 +66,7 @@ int getIterationNumber(int point_number_, // The number of points
 	double confidence_); // The required confidence
 
 // Visualize the effect of the point normalization
-void checkEffectOfNormalization(const std::vector<cv::Point2d> &source_points_,  // Points in the first image 
+cv::Mat checkEffectOfNormalization(const std::vector<cv::Point2d> &source_points_,  // Points in the first image 
 	const std::vector<cv::Point2d> &destination_points_,   // Points in the second image
 	const std::vector<cv::Point2d> &normalized_source_points_,  // Normalized points in the first image 
 	const std::vector<cv::Point2d> &normalized_destination_points_, // Normalized points in the second image
@@ -74,15 +74,18 @@ void checkEffectOfNormalization(const std::vector<cv::Point2d> &source_points_, 
 	const cv::Mat &T2_, // Normalizing transforcv::Mation in the second image
 	const std::vector<size_t> &inliers_); // The inliers of the fundamental matrix
 
-int main()
+int main(int argc, char** argv)
 {
-
+	if (argc < 4) {
+		std::cerr << "Usage: " << argv[0] << " IMG1 IMG2 FEATURES OUTPUT.XYZ" << std::endl;
+		return 1;
+	}
 	// Load images
-	cv::Mat image1 = cv::imread("D:/source/repos/stereo_reconstruction/inputs/1.png");
-	cv::Mat image2 = cv::imread("D:/source/repos/stereo_reconstruction/inputs/2.png");
+	cv::Mat image1 = cv::imread(argv[1]);
+	cv::Mat image2 = cv::imread(argv[2]);
 
 
-	MatrixReaderWriter mtxrw = "D:/source/repos/stereo_reconstruction/inputs/12_W_first_normal_leftright.mat";
+	MatrixReaderWriter mtxrw = argv[3];
 	std::vector<cv::Point2d> source_points, destination_points; // Point correspondences
 	for (int i = 0; i < mtxrw.columnNum; i++) {
 		source_points.push_back(cv::Point2d((double)mtxrw.data[i], (double)mtxrw.data[mtxrw.columnNum + i]));
@@ -112,6 +115,17 @@ int main()
 		0.99, // The required confidence in the results 
 		1.0); // The inlier-outlier threshold
 	
+	// Check the effect of normalization and 
+	// fit the fundamental matrix to all correspondences 
+	F = checkEffectOfNormalization(
+		source_points,
+		destination_points,
+		normalized_source_points,
+		normalized_destination_points,
+		T1,
+		T2,
+		inliers);
+
 	// Calibration matrix
 	cv::Mat K = (cv::Mat_<double>(3, 3) << 1262.620252, 0.000000, 934.611657,
 		0.000000, 1267.365350, 659.520995,
@@ -138,9 +152,35 @@ int main()
 
 	std::vector<cv::KeyPoint> src_inliers(inliers.size()), dst_inliers(inliers.size());
 	std::vector<cv::DMatch> inlier_matches(inliers.size());
-	std::ofstream out_file("triangulated_points.txt");
+	std::ofstream out_file(argv[4]);
 	for (auto inl_idx = 0; inl_idx < inliers.size(); ++inl_idx)
 	{
+		const size_t& inlierIdx = inliers[inl_idx];
+		const cv::Mat pt1 = static_cast<cv::Mat>(source_points[inlierIdx]);
+		const cv::Mat pt2 = static_cast<cv::Mat>(destination_points[inlierIdx]);
+		// Estimate the 3D coordinates of the current inlier correspondence
+		cv::Mat point3d;
+		linearTriangulation(P1,
+			P2,
+			pt1,
+			pt2,
+			point3d);
+
+		const int xi1 = round(source_points[inlierIdx].x);
+		const int yi1 = round(source_points[inlierIdx].y);
+		const int xi2 = round(destination_points[inlierIdx].x);
+		const int yi2 = round(destination_points[inlierIdx].y);
+
+		const auto& color1 = image1.at<cv::Vec3b>(yi1, xi1);
+		const auto& color2 = image2.at<cv::Vec3b>(yi2, xi2);
+		const auto color = 0.5 * (color1 + color2);
+		out_file << point3d.at<double>(0) << " "
+			<< point3d.at<double>(1) << " "
+			<< point3d.at<double>(2) << " "
+			<< (int)color[0] << " "
+			<< (int)color[1] << " "
+			<< (int)color[2] << "\n";
+
 		// Construct the matches std::vector for the drawing
 		src_inliers[inl_idx].pt = source_points[inliers[inl_idx]] / resize_by;
 		dst_inliers[inl_idx].pt = destination_points[inliers[inl_idx]] / resize_by;
@@ -344,25 +384,171 @@ void normalizePoints(
 	const size_t pointNumber = input_source_points_.size();
 	output_source_points_.resize(pointNumber);
 	output_destination_points_.resize(pointNumber);
+	
+	// Calculate the mass points
+	cv::Point2d mass1(0, 0), mass2(0, 0);
 
 	for (auto i = 0; i < pointNumber; ++i)
 	{
-		output_source_points_[i] = input_source_points_[i];
-		output_destination_points_[i] = input_destination_points_[i];
+		mass1 = mass1 + input_source_points_[i];
+		mass2 = mass2 + input_destination_points_[i];
 	}
+	mass1 = mass1 * (1.0 / pointNumber);
+	mass2 = mass2 * (1.0 / pointNumber);
+
+	// Translate the point clouds to origin
+	for (auto i = 0; i < pointNumber; ++i)
+	{
+		output_source_points_[i] = input_source_points_[i] - mass1;
+		output_destination_points_[i] = input_destination_points_[i] - mass2;
+	}
+
+	// Calculate the average distances of the points from the origin
+	double avgDistance1 = 0.0,
+		avgDistance2 = 0.0;
+	for (auto i = 0; i < pointNumber; ++i)
+	{
+		avgDistance1 += cv::norm(output_source_points_[i]);
+		avgDistance2 += cv::norm(output_destination_points_[i]);
+	}
+
+	avgDistance1 /= pointNumber;
+	avgDistance2 /= pointNumber;
+
+	const double multiplier1 =
+		sqrt(2) / avgDistance1;
+	const double multiplier2 =
+		sqrt(2) / avgDistance2;
+
+	for (auto i = 0; i < pointNumber; ++i)
+	{
+		output_source_points_[i] *= multiplier1;
+		output_destination_points_[i] *= multiplier2;
+	}
+
+	T1_.at<double>(0, 0) = multiplier1;
+	T1_.at<double>(1, 1) = multiplier1;
+	T1_.at<double>(0, 2) = -multiplier1 * mass1.x;
+	T1_.at<double>(1, 2) = -multiplier1 * mass1.y;
+
+	T2_.at<double>(0, 0) = multiplier2;
+	T2_.at<double>(1, 1) = multiplier2;
+	T2_.at<double>(0, 2) = -multiplier2 * mass2.x;
+	T2_.at<double>(1, 2) = -multiplier2 * mass2.y;
+
 }
 
 
 // Visualize the effect of the point normalization
-void checkEffectOfNormalization(const std::vector<cv::Point2d> &source_points_,  // Points in the first image 
+cv::Mat checkEffectOfNormalization(const std::vector<cv::Point2d> &source_points_,  // Points in the first image 
 	const std::vector<cv::Point2d> &destination_points_,   // Points in the second image
 	const std::vector<cv::Point2d> &normalized_source_points_,  // Normalized points in the first image 
 	const std::vector<cv::Point2d> &normalized_destination_points_, // Normalized points in the second image
-	const cv::Mat &T1_, // Normalizing transforcv::Mation in the first image
-	const cv::Mat &T2_, // Normalizing transforcv::Mation in the second image
+	const cv::Mat &T1_, // Normalizing transformation in the first image
+	const cv::Mat &T2_, // Normalizing transformation in the second image
 	const std::vector<size_t> &inliers_) // The inliers of the fundamental matrix
 {
-	
+	std::vector<cv::Point2d> source_inliers;
+	std::vector<cv::Point2d> destination_inliers;
+	std::vector<cv::Point2d> normalized_source_inliers;
+	std::vector<cv::Point2d> normalized_destination_inliers;
+
+	for (const auto& inlierIdx : inliers_) {
+		source_inliers.emplace_back(source_points_[inlierIdx]);
+		destination_inliers.emplace_back(destination_points_[inlierIdx]);
+		normalized_source_inliers.emplace_back(normalized_source_points_[inlierIdx]);
+		normalized_destination_inliers.emplace_back(normalized_destination_points_[inlierIdx]);
+	}
+
+	// Estimate the fundamental matrix from the original points
+	cv::Mat unnormalized_fundamental_matrix(3, 3, CV_64F);
+	getFundamentalMatrixLSQ(
+		source_inliers,
+		destination_inliers,
+		unnormalized_fundamental_matrix);
+
+	// Estimate the fundamental matrix from the normalized original points
+	cv::Mat normalized_fundamental_matrix(3, 3, CV_64F);
+	getFundamentalMatrixLSQ(
+		normalized_source_inliers,
+		normalized_destination_inliers,
+		normalized_fundamental_matrix);
+
+	normalized_fundamental_matrix = T2_.t() * normalized_fundamental_matrix * T1_; // Denormalize the fundamental matrix
+
+	// Calculating the error of unnormalized and normalized fundamental matrices
+	double error1 = 0.0, error2 = 0.0;
+	for (size_t i = 0; i < inliers_.size(); ++i) {
+		// Symmetric epipolar distance   
+		cv::Mat pt1 = (cv::Mat_<double>(3, 1) << source_inliers[i].x, source_inliers[i].y, 1);
+		cv::Mat pt2 = (cv::Mat_<double>(3, 1) << destination_inliers[i].x, destination_inliers[i].y, 1);
+
+		// Calculate the error
+		cv::Mat lL = unnormalized_fundamental_matrix.t() * pt2;
+		cv::Mat lR = unnormalized_fundamental_matrix * pt1;
+
+		// Calculate the distance of point pt1 from lL
+		const double
+			& aL = lL.at<double>(0),
+			& bL = lL.at<double>(1),
+			& cL = lL.at<double>(2);
+
+		double tL = abs(aL * source_inliers[i].x + bL * source_inliers[i].y + cL);
+		double dL = sqrt(aL * aL + bL * bL);
+		double distanceL = tL / dL;
+
+		// Calculate the distance of point pt2 from lR
+		const double
+			& aR = lR.at<double>(0),
+			& bR = lR.at<double>(1),
+			& cR = lR.at<double>(2);
+
+		double tR = abs(aR * destination_inliers[i].x + bR * destination_inliers[i].y + cR);
+		double dR = sqrt(aR * aR + bR * bR);
+		double distanceR = tR / dR;
+
+		double dist = 0.5 * (distanceL + distanceR);
+		error1 += dist;
+	}
+
+	for (size_t i = 0; i < inliers_.size(); ++i) {
+		// Symmetric epipolar distance   
+		cv::Mat pt1 = (cv::Mat_<double>(3, 1) << source_inliers[i].x, source_inliers[i].y, 1);
+		cv::Mat pt2 = (cv::Mat_<double>(3, 1) << destination_inliers[i].x, destination_inliers[i].y, 1);
+
+		// Calculate the error
+		cv::Mat lL = normalized_fundamental_matrix.t() * pt2;
+		cv::Mat lR = normalized_fundamental_matrix * pt1;
+
+		// Calculate the distance of point pt1 from lL
+		const double
+			& aL = lL.at<double>(0),
+			& bL = lL.at<double>(1),
+			& cL = lL.at<double>(2);
+
+		double tL = abs(aL * source_inliers[i].x + bL * source_inliers[i].y + cL);
+		double dL = sqrt(aL * aL + bL * bL);
+		double distanceL = tL / dL;
+
+		// Calculate the distance of point pt2 from lR
+		const double
+			& aR = lR.at<double>(0),
+			& bR = lR.at<double>(1),
+			& cR = lR.at<double>(2);
+
+		double tR = abs(aR * destination_inliers[i].x + bR * destination_inliers[i].y + cR);
+		double dR = sqrt(aR * aR + bR * bR);
+		double distanceR = tR / dR;
+
+		double dist = 0.5 * (distanceL + distanceR);
+		error2 += dist;
+	}
+	error1 = error1 / inliers_.size();
+	error2 = error2 / inliers_.size();
+
+	printf("Error of the unnormalized fundamental matrix is %f px. \n", error1);
+	printf("Error of the normalized fundamental matrix is %f px. \n", error2);
+	return normalized_fundamental_matrix;
 }
 
 int getIterationNumber(int point_number_,
