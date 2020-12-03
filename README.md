@@ -12,7 +12,7 @@ Input #2:
  
  Matched features:
  
- <img src="https://github.com/nyakasko/stereo_reconstruction/blob/main/outputs/matches.PNG" width="600" height="400">
+ <img src="https://github.com/nyakasko/stereo_reconstruction/blob/main/outputs/matches.PNG" width="800" height="400">
  
  Reconstructed 3d point cloud:
  
